@@ -1,1 +1,1 @@
-module.exports = require('../server.js').handler;
+module.exports = require('../server.js');
