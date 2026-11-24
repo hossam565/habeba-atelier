@@ -1,0 +1,19 @@
+{
+  "name": "habeba-el-aqsa",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Habeba El Aqsa atelier management (Postgres)",
+  "scripts": {
+    "start": "node server.js",
+    "demo": "node seed-demo.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.2.17"
+  }
+}
