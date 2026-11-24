@@ -6,9 +6,9 @@ let impl;
 const conv = sql => { let i = 0; return sql.replace(/\?/g, () => '$' + (++i)); };
 
 async function init() {
-  if (process.env.DATABASE_URL) {
+  if (process.env.DATABASE_URL || process.env.PGHOST) {
     const { Pool } = require('pg');
-    const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 5, ssl: process.env.PGSSL === 'off' ? false : { rejectUnauthorized: false } });
+    const pool = new Pool({ ...(process.env.DATABASE_URL ? { connectionString: process.env.DATABASE_URL } : { host: process.env.PGHOST, user: process.env.PGUSER, database: process.env.PGDATABASE, password: process.env.PGPASSWORD, port: +(process.env.PGPORT || 5432) }), max: 5, ssl: process.env.PGSSL === 'off' ? false : { rejectUnauthorized: false } });
     impl = {
       query: async (sql, p) => (await (als.getStore() || pool).query(sql, p)).rows,
       tx: async fn => {
@@ -18,7 +18,7 @@ async function init() {
       },
     };
   } else {
-    if (process.env.NODE_ENV === 'production') throw new Error('DATABASE_URL is required in production');
+    if (process.env.NODE_ENV === 'production') throw new Error('DATABASE_URL or PGHOST is required in production');
     const { PGlite } = require('@electric-sql/pglite');
     const fs = require('node:fs'); const dir = process.env.DATA_DIR || path.join(__dirname, 'data'); fs.mkdirSync(dir, { recursive: true });
     const pg = new PGlite(path.join(dir, 'pgdata')); await pg.waitReady;
