@@ -346,7 +346,7 @@ const boot = () => ready || (ready = (async () => {
 
 const handler = async (req, res) => {
   await boot();
-  const url = new URL(req.url, 'http://x');
+  const url = new URL(req.url, 'http://x'); if (url.searchParams.get('__dbg')) return send(res, 200, { url: req.url, method: req.method, n: routes.length });
   try {
     if (url.pathname.startsWith('/api/')) {
       const cookie = Object.fromEntries((req.headers.cookie || '').split(/;\s*/).map(s => s.split('=')).filter(a => a[0]));
