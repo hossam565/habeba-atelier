@@ -346,7 +346,8 @@ const boot = () => ready || (ready = (async () => {
 
 const handler = async (req, res) => {
   await boot();
-  const url = new URL(req.url, 'http://x'); if (url.searchParams.get('__dbg')) return send(res, 200, { url: req.url, method: req.method, n: routes.length });
+  let url = new URL(req.url, 'http://x');
+  if (url.pathname === '/api/index' && url.searchParams.get('__p')) { const q = new URLSearchParams(url.search); const p = q.get('__p'); q.delete('__p'); q.delete('path'); req.url = '/' + p + (q.toString() ? '?' + q : ''); url = new URL(req.url, 'http://x'); }
   try {
     if (url.pathname.startsWith('/api/')) {
       const cookie = Object.fromEntries((req.headers.cookie || '').split(/;\s*/).map(s => s.split('=')).filter(a => a[0]));
