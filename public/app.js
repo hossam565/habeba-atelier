@@ -36,7 +36,7 @@ async function pickPhoto(id, inp) { if (!inp.files[0]) return; await run(async (
 
 // ---------- shell ----------
 function shell(title, body, opts = {}) {
-  const tabs = [['home', '🏠', 'الرئيسية'], ['dresses', '👗', 'الفساتين'], ['new', '+', 'حجز جديد'], ['rentals', '📋', 'الإيجارات'], ['more', '☰', 'المزيد']];
+  const tabs = [['home', '🏠', 'الرئيسية'], ['dresses', '👗', 'الفساتين'], ['new', '+', 'حجز'], ['handover', '🤝', 'التسليم'], ['more', '☰', 'المزيد']];
   $app.innerHTML = `<header class="top">${opts.back ? `<button onclick="${opts.back}">→</button>` : ''}<h1>${esc(title)}</h1><span class="who">${esc(ME.name)}</span></header>
   <main>${body}</main>
   <nav class="bar"><div class="in">${tabs.map(([k, ic, l]) => `<a class="${TAB === k ? 'on' : ''} ${k === 'new' ? 'plus' : ''}" onclick="go('${k}')"><b>${ic}</b>${l}</a>`).join('')}</div></nav>`;
@@ -48,6 +48,8 @@ function go(t, arg) {
   if (t === 'dresses') return renderDresses();
   if (t === 'new') return renderNewRental(arg);
   if (t === 'rentals') return renderRentals();
+  if (t === 'handover') return renderHandoverList();
+  if (t === 'reports') return renderReports();
   if (t === 'more') return renderMore();
 }
 
@@ -148,7 +150,7 @@ async function renderDress(id) {
         ${isOwner() ? `<button class="btn sec" onclick='dressForm(${JSON.stringify({ id: d.id, code: d.code, name: d.name, category_id: d.category_id, size: d.size, color: d.color, price: d.price, deposit: d.deposit, notes: d.notes, photo_id: d.photo_id }).replace(/'/g, '&#39;')})'>✏️ تعديل</button><button class="btn bad" onclick="delDress(${d.id},'${esc(d.code)}')">🗑 حذف</button>` : ''}
       </div>
       <h2>سجل الفستان</h2>${d.rentals.map(rentalItem).join('') || '<p class="mut">لسه متأجرش</p>'}
-      ${d.maintenance.length ? `<h2>الغسيل والتصليح</h2>${d.maintenance.map(m => `<div class="li" style="cursor:default"><div class="grow"><div class="t">${m.kind === 'washing' ? '🧺 غسيل' : '🧵 تصليح'}</div><div class="s">${fd(m.start_date)} ← ${fd(m.expected_back)} ${m.done_at ? '(خلص)' : '(شغال)'} ${esc(m.note)}</div></div></div>`).join('')}` : ''}`, { back: "go('dresses')" });
+      ${d.maintenance.length ? `<h2>الغسيل والتصليح</h2>${d.maintenance.map(m => `<div class="li" style="cursor:default"><div class="grow"><div class="t">${m.kind === 'washing' ? '🧺 غسيل' : '🧵 تصليح'}</div><div class="s">${fd(m.start_date)} ← ${fd(m.expected_back)} ${m.done_at ? '(خلص)' : '(شغال)'} ${esc(m.note)}</div></div>${isOwner() ? `<button class="btn bad sm" onclick="delMaint(${m.id},${d.id})">🗑</button>` : ''}</div>`).join('')}` : ''}`, { back: "go('dresses')" });
   });
 }
 function maintForm(id, kind) {
@@ -177,60 +179,90 @@ async function saveDress(id) {
     closeModal(); toast('تم الحفظ'); id ? renderDress(id) : renderDresses();
   });
 }
-async function delDress(id, code) { if (!confirm(`حذف الفستان ${code}؟`)) return; await run(async () => { await api('DELETE', '/api/dresses/' + id); toast('تم الحذف'); go('dresses'); }); }
+async function delDress(id, code) { if (!confirm(`مسح الفستان ${code}؟ لو عليه حجوزات هتتلغي.`)) return; await run(async () => { await api('DELETE', '/api/dresses/' + id + '?force=1'); toast('تم المسح'); go('dresses'); }); }
 
 // ---------- new rental ----------
 async function renderNewRental(dressId) {
-  shell('حجز / إيجار جديد', '<p class="mut">بيحمّل...</p>');
+  shell('حجز فستان', '<p class="mut">بيحمّل...</p>');
   await run(async () => {
     S.dresses = await api('GET', '/api/dresses');
     const t = TODAY;
-    shell('حجز / إيجار جديد', `
-      <div class="card"><b>1) الفستان</b>
-        <select id="rd" onchange="rdPick()"><option value="">اختار الفستان...</option>${S.dresses.map(d => `<option value="${d.id}" ${d.id === dressId ? 'selected' : ''}>${esc(d.code)} - ${esc(d.name)} (${esc(d.status.label)})</option>`).join('')}</select>
-        <div id="rdinfo" class="hint"></div></div>
-      <div class="card"><b>2) المواعيد</b>
-        <div class="two"><div><label>يوم الاستلام</label><input type="date" id="rs" value="${t}" onchange="chkAvail()"></div><div><label>يوم الرجوع</label><input type="date" id="re" value="${t}" onchange="chkAvail()"></div></div>
-        <div id="avail"></div></div>
-      <div class="card"><b>3) بيانات العميلة</b>
-        <label>الاسم بالكامل *</label><input id="cn"><label>رقم التليفون</label><input id="cp" type="tel" inputmode="tel">
-        <label>الرقم القومي</label><input id="cid" inputmode="numeric" maxlength="14"><label>العنوان</label><input id="ca">
-        <label>صورة البطاقة</label>${photoPicker('cph', 'صوّر البطاقة أو اختار صورة', true)}</div>
-      <div class="card"><b>4) الحساب</b>
-        <div class="two"><div><label>سعر الإيجار</label><input id="pr" type="number" inputmode="decimal" oninput="calc()"></div><div><label>الخصم</label><input id="ds" type="number" inputmode="decimal" value="0" oninput="calc()"></div></div>
-        <div class="kv"><span>الإجمالي بعد الخصم</span><b id="tot">0 ج</b></div>
-        <div class="two"><div><label>المدفوع من الإيجار</label><input id="pd" type="number" inputmode="decimal" value="0" oninput="calc()"></div><div><label>المتبقي</label><input id="rm" readonly></div></div>
-        <div class="two"><div><label>التأمين المطلوب</label><input id="dp" type="number" inputmode="decimal" value="0"></div><div><label>التأمين المدفوع</label><input id="dpp" type="number" inputmode="decimal" value="0"></div></div>
-        <div class="hint">التأمين بيتسجل لوحده وبيترد أو يتخصم منه وقت الاستلام</div>
-        <label>ملاحظات</label><input id="nt"></div>
-      <div class="btns"><button class="btn" onclick="saveRental(false)">📅 تسجيل حجز</button><button class="btn ok" onclick="saveRental(true)">🤝 تسليم دلوقتي</button></div>`);
-    rdPick();
+    shell('حجز فستان', bookingFields({ dress_id: dressId || '', start_date: t, end_date: t, price: '', discount: 0, paid: 0, customer_name: '', phone: '', measures: '', notes: '' }) +
+      `<div class="btns"><button class="btn full" onclick="saveRental()">📅 تسجيل الحجز</button></div>`);
+    rdPick(!dressId);
   });
 }
-function rdPick() {
-  const d = S.dresses.find(x => x.id == val('rd')); const el = document.getElementById('rdinfo');
-  if (!d) { el.textContent = ''; return; }
-  document.getElementById('pr').value = d.price || ''; document.getElementById('dp').value = d.deposit || '';
-  el.innerHTML = `<span class="badge b-${d.status.key}">${esc(d.status.label)}</span>`; calc(); chkAvail();
+function bookingFields(r) {
+  return `<div class="card"><b>1) الفستان</b>
+    <select id="rd" onchange="rdPick(true)"><option value="">اختار رقم الفستان...</option>${S.dresses.map(d => `<option value="${d.id}" ${d.id == r.dress_id ? 'selected' : ''}>${esc(d.code)} - ${esc(d.name)}</option>`).join('')}</select>
+    <div id="rdphoto"></div><div id="rdinfo" class="hint"></div></div>
+  <div class="card"><b>2) الفلوس</b>
+    <div class="two"><div><label>سعر الإيجار</label><input id="pr" type="number" inputmode="decimal" value="${esc(r.price)}" oninput="calc()"></div><div><label>الخصم</label><input id="ds" type="number" inputmode="decimal" value="${esc(r.discount)}" oninput="calc()"></div></div>
+    <div class="two"><div><label>العربون المدفوع</label><input id="pd" type="number" inputmode="decimal" value="${esc(r.paid)}" oninput="calc()"></div><div><label>الباقي</label><input id="rm" readonly></div></div>
+    <div class="kv"><span>الإجمالي بعد الخصم</span><b id="tot">0 ج</b></div></div>
+  <div class="card"><b>3) التسليم والعميلة</b>
+    <div class="two"><div><label>يوم التسليم</label><input type="date" id="rs" value="${r.start_date}" onchange="chkAvail()"></div><div><label>يوم الرجوع</label><input type="date" id="re" value="${r.end_date}" onchange="chkAvail()"></div></div>
+    <div id="avail"></div>
+    <label>اسم العميلة *</label><input id="cn" value="${esc(r.customer_name)}"><label>رقم التليفون</label><input id="cp" type="tel" inputmode="tel" value="${esc(r.phone)}">
+    <label>المقاسات</label><input id="ms" value="${esc(r.measures)}" placeholder="صدر / وسط / طول ..."><label>ملاحظات</label><input id="nt" value="${esc(r.notes)}"></div>`;
+}
+function rdPick(setPrice) {
+  const d = S.dresses.find(x => x.id == val('rd')); const el = document.getElementById('rdinfo'), ph = document.getElementById('rdphoto');
+  if (!d) { el.textContent = ''; ph.innerHTML = ''; calc(); return; }
+  if (setPrice) document.getElementById('pr').value = d.price || '';
+  ph.innerHTML = d.photo_id ? `<img class="bigph" style="max-height:260px;object-fit:cover" src="/api/files/${d.photo_id}">` : '';
+  el.innerHTML = `<span class="badge b-${d.status.key}">${esc(d.status.label)}</span>`; calc(); chkAvail(true);
 }
 function calc() { const t = Math.max(0, (+val('pr') || 0) - (+val('ds') || 0)); document.getElementById('tot').textContent = money(t); document.getElementById('rm').value = money(t - (+val('pd') || 0)); }
-async function chkAvail() {
+async function chkAvail(skip) {
   const id = val('rd'), s = val('rs'), e = val('re'), el = document.getElementById('avail'); if (!id || !s || !e) return;
-  if (e < s) { el.innerHTML = '<div class="warnbox">يوم الرجوع قبل الاستلام</div>'; return; }
+  if (e < s) { el.innerHTML = '<div class="warnbox">يوم الرجوع قبل التسليم</div>'; return; }
   try {
     const d = await api('GET', '/api/dresses/' + id); const t = TODAY; const hit = [];
-    d.rentals.filter(r => r.status === 'booked' || r.status === 'out').forEach(r => { const re = r.status === 'out' && r.end_date < t ? t : r.end_date; if (!(re < s || r.start_date > e)) hit.push(`محجوز من ${fd(r.start_date)} لـ ${fd(re)} (${r.customer_name})`); });
+    d.rentals.filter(r => (r.status === 'booked' || r.status === 'out') && r.id !== window._editId).forEach(r => { const re = r.status === 'out' && r.end_date < t ? t : r.end_date; if (!(re < s || r.start_date > e)) hit.push(`محجوز من ${fd(r.start_date)} إلى ${fd(re)} (${r.customer_name})`); });
     d.maintenance.filter(m => !m.done_at).forEach(m => { if (!(m.expected_back < s || m.start_date > e)) hit.push(`في ${m.kind === 'washing' ? 'الغسيل' : 'التصليح'} لحد ${fd(m.expected_back)}`); });
     el.innerHTML = hit.length ? `<div class="warnbox">⚠️ مش متاح في الفترة دي: ${esc(hit[0])}</div>` : '<div class="hint" style="color:var(--ok)">✔ متاح في الفترة دي</div>';
   } catch {}
 }
-async function saveRental(now) {
+function bookingBody() { return { dress_id: val('rd'), start_date: val('rs'), end_date: val('re'), customer_name: val('cn'), phone: val('cp'), measures: val('ms'), price: val('pr'), discount: val('ds'), paid: val('pd'), notes: val('nt') }; }
+async function saveRental() {
+  await run(async () => { const r = await api('POST', '/api/rentals', bookingBody()); toast('تم تسجيل الحجز ✔'); renderRental(r.id); });
+}
+
+// ---------- handover (page 2) ----------
+async function renderHandoverList() {
+  shell('التسليم', '<p class="mut">بيحمّل...</p>');
   await run(async () => {
-    const photo = val('cph');
-    const r = await api('POST', '/api/rentals', { dress_id: val('rd'), start_date: val('rs'), end_date: val('re'), customer_name: val('cn'), phone: val('cp'), national_id: val('cid'), address: val('ca'),
-      id_photo: photo || null, price: val('pr'), discount: val('ds'), paid: val('pd'), deposit: val('dp'), deposit_paid: val('dpp'), notes: val('nt'), handover_now: now });
-    toast('تم التسجيل ✔'); renderRental(r.id);
+    const [bk, out] = await Promise.all([api('GET', '/api/rentals?status=booked'), api('GET', '/api/rentals?status=out')]);
+    bk.sort((a, b) => a.start_date < b.start_date ? -1 : 1); out.sort((a, b) => a.end_date < b.end_date ? -1 : 1);
+    const it = (r, act) => `<div class="li" onclick="${act}(${r.id})"><div class="grow"><div class="t">${esc(r.customer_name)} <span class="mut">- فستان ${esc(r.dress_code)}</span></div>
+      <div class="s">${fd(r.start_date)} ← ${fd(r.end_date)}${r.overdue ? ' <span class="late">متأخر</span>' : ''}${r.remaining > 0 ? ' · باقي ' + money(r.remaining) : ''}</div></div><span class="badge b-${r.status}">${STATUS_AR[r.status]}</span></div>`;
+    shell('التسليم', `<h2>حجوزات مستنية التسليم (${bk.length})</h2>${bk.map(r => it(r, 'renderHandover')).join('') || '<p class="mut">مفيش حجوزات</p>'}
+      <h2>فساتين خارجة (${out.length})</h2>${out.map(r => it(r, 'renderRental')).join('') || '<p class="mut">مفيش فساتين خارجة</p>'}`);
   });
+}
+async function renderHandover(id) {
+  await run(async () => {
+    const r = await api('GET', '/api/rentals/' + id); const d = await api('GET', '/api/dresses/' + r.dress_id);
+    shell('تسليم فستان ' + r.dress_code, `
+      <div class="card">${d.photo_id ? `<img class="bigph" style="max-height:260px;object-fit:cover" src="/api/files/${d.photo_id}">` : ''}
+        <div class="row" style="margin-top:8px"><div class="grow"><b style="font-size:19px">فستان ${esc(r.dress_code)}</b><div class="mut">${esc(r.dress_name)}</div></div></div>
+        <div class="kv"><span>العميلة</span><b>${esc(r.customer_name)}</b></div><div class="kv"><span>التليفون</span><b>${esc(r.phone) || '-'}</b></div>
+        <div class="kv"><span>المقاسات</span><b>${esc(r.measures) || '-'}</b></div>${r.notes ? `<div class="kv"><span>ملاحظات</span><b>${esc(r.notes)}</b></div>` : ''}
+        <div class="kv"><span>الإجمالي</span><b>${money(r.total)}</b></div><div class="kv"><span>العربون المدفوع</span><b>${money(r.paid)}</b></div>
+        <div class="kv"><span>الباقي</span><b class="late">${money(r.remaining)}</b></div></div>
+      <div class="card"><b>عند التسليم</b>
+        <label>الباقي اللي هتاخديه دلوقتي</label><input id="hp" type="number" inputmode="decimal" value="${r.remaining}">
+        <label>التأمين المدفوع (بيتردّ لو الفستان رجع سليم)</label><input id="hd" type="number" inputmode="decimal" value="${r.deposit || d.deposit || 0}">
+        <label>ميعاد رجوع الفستان</label><input type="date" id="he" value="${r.end_date}">
+        <label>الرقم القومي</label><input id="hn" inputmode="numeric" maxlength="14" value="${esc(r.national_id)}">
+        <label>صورة البطاقة</label>${photoPicker('hph', 'صوّر البطاقة', true)}</div>
+      <div class="btns"><button class="btn ok full" onclick="doHandover2(${r.id})">🤝 تأكيد التسليم</button>
+        <button class="btn sec" onclick="renderRental(${r.id})">تفاصيل الحجز</button></div>`, { back: "go('handover')" });
+  });
+}
+async function doHandover2(id) {
+  await run(async () => { await api('POST', `/api/rentals/${id}/handover`, { paid: val('hp'), deposit_paid: val('hd'), end_date: val('he'), national_id: val('hn'), id_photo: val('hph') || null }); toast('تم التسليم ✔'); renderRental(id); });
 }
 
 // ---------- rentals ----------
@@ -252,7 +284,7 @@ async function renderRental(id) {
       <div class="card"><div class="row"><div class="grow"><b style="font-size:19px">${esc(r.customer_name)}</b><div class="mut">فستان ${esc(r.dress_code)} ${esc(r.dress_name)}</div></div><span class="badge b-${r.status}">${STATUS_AR[r.status]}</span></div>
         <div class="kv"><span>الاستلام</span><b>${fd(r.start_date)}</b></div><div class="kv"><span>الرجوع</span><b class="${r.overdue ? 'late' : ''}">${fd(r.end_date)}${r.overdue ? ' (متأخر)' : ''}</b></div>
         <div class="kv"><span>التليفون</span><b>${r.phone ? `<a href="tel:${esc(r.phone)}">${esc(r.phone)}</a>` : '-'}</b></div>
-        <div class="kv"><span>الرقم القومي</span><b>${esc(r.national_id) || '-'}</b></div><div class="kv"><span>العنوان</span><b>${esc(r.address) || '-'}</b></div>
+        <div class="kv"><span>المقاسات</span><b>${esc(r.measures) || '-'}</b></div><div class="kv"><span>الرقم القومي</span><b>${esc(r.national_id) || '-'}</b></div><div class="kv"><span>العنوان</span><b>${esc(r.address) || '-'}</b></div>
         ${r.notes ? `<div class="kv"><span>ملاحظات</span><b>${esc(r.notes)}</b></div>` : ''}
         ${r.id_photo_id ? `<p><a class="btn sec sm" onclick="showId(${r.id_photo_id})">🪪 عرض صورة البطاقة</a></p>` : ''}</div>
       <div class="card"><b>الحساب</b>
@@ -262,14 +294,14 @@ async function renderRental(id) {
         <hr><div class="kv"><span>التأمين المطلوب</span><b>${money(r.deposit)}</b></div><div class="kv"><span>التأمين المدفوع</span><b>${money(r.deposit_paid)}</b></div>
         ${r.status === 'returned' ? `<div class="kv"><span>اترد</span><b>${money(r.deposit_refunded)}</b></div><div class="kv"><span>اتخصم</span><b class="${r.deposit_deducted ? 'late' : ''}">${money(r.deposit_deducted)}</b></div>${r.deposit_note ? `<div class="kv"><span>سبب الخصم</span><b>${esc(r.deposit_note)}</b></div>` : ''}` : `<div class="kv"><span>تأمين معانا دلوقتي</span><b>${money(r.deposit_held)}</b></div>`}</div>
       <div class="btns">
-        ${r.status === 'booked' ? `<button class="btn ok full" onclick="doHandover(${r.id})">🤝 تسليم الفستان للعميلة</button>` : ''}
+        ${r.status === 'booked' ? `<button class="btn ok full" onclick="renderHandover(${r.id})">🤝 تسليم الفستان للعميلة</button>` : ''}
         ${r.status === 'out' ? `<button class="btn warn full" onclick="returnForm(${r.id})">↩️ استلام الفستان (رجوع)</button>` : ''}
         ${r.status === 'booked' || r.status === 'out' ? `${r.remaining > 0 ? `<button class="btn blue" onclick="payForm(${r.id},'rental',${r.remaining})">💵 دفعة إيجار</button>` : ''}${r.deposit_paid < r.deposit ? `<button class="btn blue" onclick="payForm(${r.id},'deposit',${r.deposit - r.deposit_paid})">🔒 دفع التأمين</button>` : ''}` : ''}
         <button class="btn sec" onclick="renderInvoice(${r.id})">🧾 الفاتورة</button>
         ${isOwner() && r.status === 'booked' ? `<button class="btn bad" onclick="cancelRental(${r.id})">إلغاء الحجز</button>` : ''}
-        ${isOwner() && (r.status === 'booked' || r.status === 'out') ? `<button class="btn sec" onclick="editRental(${r.id})">✏️ تعديل الحجز</button>` : ''}
+        ${isOwner() ? `<button class="btn sec" onclick="editRental(${r.id})">✏️ تعديل</button><button class="btn sec" onclick="statusForm(${r.id})">🔄 تغيير الحالة</button><button class="btn bad" onclick="delRental(${r.id})">🗑 مسح العملية</button>` : ''}
       </div>
-      <h2>الدفعات</h2>${r.payments.map(p => `<div class="kv"><span>${payKind[p.kind]} <span class="mut small">${ft(p.at)} - ${esc(p.by_user)}</span></span><b>${money(p.amount)}</b></div>`).join('') || '<p class="mut">مفيش دفعات</p>'}`, { back: "go('rentals')" });
+      <h2>الدفعات</h2>${r.payments.map(p => `<div class="kv"><span>${payKind[p.kind]} <span class="mut small">${ft(p.at)} - ${esc(p.by_user)}</span></span><b>${money(p.amount)}${isOwner() ? ` <a onclick="editPay(${p.id},${p.amount},'${p.day}',${r.id})" style="cursor:pointer">✏️</a> <a onclick="delPay(${p.id},${r.id})" style="cursor:pointer">🗑</a>` : ''}</b></div>`).join('') || '<p class="mut">مفيش دفعات</p>'}`, { back: "go('rentals')" });
     window._r = r;
   });
 }
@@ -302,14 +334,21 @@ async function doReturn(id, held) {
     closeModal(); toast(`تم الاستلام. اترد ${money(x.refunded)}${x.deducted ? ' واتخصم ' + money(x.deducted) : ''}`); renderRental(id); });
 }
 async function cancelRental(id) { if (!confirm('إلغاء الحجز؟')) return; await run(async () => { await api('POST', `/api/rentals/${id}/cancel`); toast('تم الإلغاء'); renderRental(id); }); }
-function editRental(id) {
-  const r = window._r;
-  modal(`<h3>تعديل الحجز</h3><label>الاسم</label><input id="en" value="${esc(r.customer_name)}"><label>التليفون</label><input id="ep" value="${esc(r.phone)}">
-  <div class="two"><div><label>الاستلام</label><input type="date" id="es" value="${r.start_date}"></div><div><label>الرجوع</label><input type="date" id="ee" value="${r.end_date}"></div></div>
-  <div class="two"><div><label>السعر</label><input type="number" id="epr" value="${r.price}"></div><div><label>الخصم</label><input type="number" id="eds" value="${r.discount}"></div></div>
-  <label>التأمين المطلوب</label><input type="number" id="edp" value="${r.deposit}"><div style="height:14px"></div><button class="btn" onclick="saveEdit(${id})">حفظ</button>`);
+async function editRental(id) {
+  const r = window._r; S.dresses = await api('GET', '/api/dresses'); window._editId = r.id;
+  modal(`<h3>تعديل الحجز #${r.id}</h3>${bookingFields({ ...r, paid: r.paid })}
+    <label>التأمين المطلوب</label><input id="edp" type="number" inputmode="decimal" value="${r.deposit}"><label>الرقم القومي</label><input id="eid" value="${esc(r.national_id)}">
+    <div style="height:14px"></div><button class="btn" onclick="saveEdit(${id})">حفظ التعديل</button>`);
+  rdPick(false);
 }
-async function saveEdit(id) { await run(async () => { await api('PUT', '/api/rentals/' + id, { customer_name: val('en'), phone: val('ep'), start_date: val('es'), end_date: val('ee'), price: val('epr'), discount: val('eds'), deposit: val('edp') }); closeModal(); toast('تم'); renderRental(id); }); }
+async function saveEdit(id) { await run(async () => { await api('PUT', '/api/rentals/' + id, { ...bookingBody(), deposit: val('edp'), national_id: val('eid') }); closeModal(); toast('تم التعديل'); renderRental(id); }); }
+function statusForm(id) { modal(`<h3>تغيير حالة العملية</h3><select id="stv"><option value="booked">محجوز</option><option value="out">خارج</option><option value="returned">تم الاسترجاع</option><option value="cancelled">ملغي</option></select><div style="height:14px"></div><button class="btn" onclick="saveStatus(${id})">حفظ</button>`); }
+async function saveStatus(id) { await run(async () => { await api('PUT', `/api/rentals/${id}/status`, { status: val('stv') }); closeModal(); toast('تم'); renderRental(id); }); }
+async function delRental(id) { if (!confirm('مسح العملية دي نهائي مع كل دفعاتها؟')) return; await run(async () => { await api('DELETE', '/api/rentals/' + id); toast('تم المسح'); go('rentals'); }); }
+function editPay(pid, amt, day, rid) { modal(`<h3>تعديل دفعة</h3><label>المبلغ</label><input id="epa" type="number" inputmode="decimal" value="${amt}"><label>اليوم</label><input type="date" id="epd" value="${day}"><div style="height:14px"></div><button class="btn" onclick="savePayEdit(${pid},${rid})">حفظ</button>`); }
+async function savePayEdit(pid, rid) { await run(async () => { await api('PUT', '/api/payments/' + pid, { amount: val('epa'), day: val('epd') }); closeModal(); toast('تم'); renderRental(rid); }); }
+async function delPay(pid, rid) { if (!confirm('مسح الدفعة دي؟')) return; await run(async () => { await api('DELETE', '/api/payments/' + pid); toast('تم المسح'); renderRental(rid); }); }
+async function delMaint(mid, did) { if (!confirm('مسح السجل ده؟')) return; await run(async () => { await api('DELETE', '/api/maintenance/' + mid); renderDress(did); }); }
 
 async function renderInvoice(id) {
   await run(async () => {
@@ -330,7 +369,7 @@ async function renderInvoice(id) {
 // ---------- more / owner ----------
 function renderMore() {
   const o = isOwner();
-  shell('المزيد', `${o ? `<div class="li" onclick="renderAccounts()"><span style="font-size:26px">💰</span><div class="grow t">الحسابات والفواتير</div></div>
+  shell('المزيد', `<div class="li" onclick="go('rentals')"><span style="font-size:26px">📋</span><div class="grow t">كل الإيجارات والحجوزات</div></div>${o ? `<div class="li" onclick="go('reports')"><span style="font-size:26px">📊</span><div class="grow t">التقارير (يوم / شهر)</div></div><div class="li" onclick="renderAccounts()"><span style="font-size:26px">💰</span><div class="grow t">الحسابات والفواتير</div></div>
     <div class="li" onclick="renderActivity()"><span style="font-size:26px">👁</span><div class="grow t">سجل نشاط الموظفين</div></div>
     <div class="li" onclick="renderCats()"><span style="font-size:26px">🗂</span><div class="grow t">أقسام الفساتين</div></div>
     <div class="li" onclick="renderUsers()"><span style="font-size:26px">👤</span><div class="grow t">الحسابات وكلمات السر</div></div>`
@@ -375,6 +414,44 @@ async function savePw(id) { await run(async () => { await api('PUT', '/api/users
 async function toggleUser(id, a) { await run(async () => { await api('PUT', '/api/users/' + id, { active: a }); renderUsers(); }); }
 function newUserForm() { modal(`<h3>موظف جديد</h3><label>الاسم</label><input id="nn"><label>اسم المستخدم</label><input id="nu" autocapitalize="off"><label>كلمة السر</label><input id="np"><div style="height:14px"></div><button class="btn" onclick="saveUser()">إضافة</button>`); }
 async function saveUser() { await run(async () => { await api('POST', '/api/users', { name: val('nn'), username: val('nu'), password: val('np') }); closeModal(); renderUsers(); }); }
+
+// ---------- reports ----------
+const KIND_AR = { rental: 'دفعة إيجار', deposit: 'تأمين مستلم', deposit_refund: 'تأمين مردود', late_fee: 'غرامة تأخير', deduction: 'مخصوم من التأمين' };
+const MONTHS_AR = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+const mlabel = m => MONTHS_AR[+m.slice(5) - 1] + ' ' + m.slice(0, 4);
+function renderReports() {
+  shell('التقارير', `<div class="card"><label>اليوم</label><input type="date" id="rpd" value="${TODAY}"><div style="height:10px"></div><button class="btn full" onclick="showDayReport()">📅 تقرير يوم</button>
+    <div style="height:14px"></div><label>الشهر</label><input type="month" id="rpm" value="${TODAY.slice(0, 7)}"><div style="height:10px"></div><button class="btn blue full" onclick="showMonthReport()">🗓 تقرير شهر (ومقارنة بالشهور اللي قبله)</button></div><div id="rpout"></div>`, { back: "go('more')" });
+}
+async function showDayReport() {
+  await run(async () => {
+    const day = val('rpd'); const r = await api('GET', '/api/report?date=' + day), t = r.day_totals;
+    document.getElementById('rpout').innerHTML = `<h2>تقرير يوم ${fd(day)}</h2><div class="tiles">
+      <div class="tile g"><small>صافي الفلوس الداخلة</small><b>${money(t.net_cash)}</b></div><div class="tile"><small>إيراد اليوم</small><b>${money(t.revenue)}</b></div>
+      <div class="tile"><small>إيجارات / عربون</small><b>${money(t.rental)}</b></div><div class="tile"><small>تأمينات مستلمة</small><b>${money(t.deposits_in)}</b></div>
+      <div class="tile"><small>تأمينات مردودة</small><b>${money(t.deposits_refunded)}</b></div><div class="tile r"><small>مخصوم من التأمين</small><b>${money(t.deposits_kept)}</b></div>
+      <div class="tile"><small>غرامات تأخير</small><b>${money(t.late_fees)}</b></div><div class="tile"><small>حجوزات جديدة</small><b>${t.bookings}</b></div>
+      <div class="tile"><small>تسليمات</small><b>${t.handovers}</b></div><div class="tile"><small>فساتين اترجعت</small><b>${t.returns}</b></div></div>
+      <h2>حركة الفلوس (${r.day_payments.length})</h2>${r.day_payments.map(p => `<div class="kv"><span>${KIND_AR[p.kind]} - ${esc(p.customer_name || '')} <span class="mut small">فستان ${esc(p.code || '')}</span></span><b>${money(p.amount)}</b></div>`).join('') || '<p class="mut">مفيش حركة</p>'}
+      <h2>عمليات اليوم (${r.day_events.length})</h2>${r.day_events.map(e => `<div class="li" onclick="renderRental(${e.id})"><div class="grow"><div class="t">${esc(e.customer_name)} <span class="mut">- فستان ${esc(e.code)}</span></div><div class="s">${fd(e.start_date)} ← ${fd(e.end_date)}</div></div><span class="badge b-${e.status}">${STATUS_AR[e.status]}</span></div>`).join('') || '<p class="mut">-</p>'}`;
+  });
+}
+async function showMonthReport() {
+  await run(async () => {
+    const mo = val('rpm'); const r = await api('GET', `/api/report?month=${mo}`), t = r.month_totals;
+    const max = Math.max(1, ...r.compare.map(c => c.revenue));
+    const diff = (a, b) => b ? `${a >= b ? '▲' : '▼'} ${Math.abs(Math.round((a - b) / b * 100))}%` : '';
+    document.getElementById('rpout').innerHTML = `<h2>تقرير شهر ${mlabel(mo)}</h2><div class="tiles">
+      <div class="tile g"><small>صافي الفلوس الداخلة</small><b>${money(t.net_cash)}</b></div><div class="tile"><small>إيراد الشهر</small><b>${money(t.revenue)}</b></div>
+      <div class="tile"><small>إيجارات / عربون</small><b>${money(t.rental)}</b></div><div class="tile"><small>تأمينات مستلمة</small><b>${money(t.deposits_in)}</b></div>
+      <div class="tile"><small>تأمينات مردودة</small><b>${money(t.deposits_refunded)}</b></div><div class="tile r"><small>مخصوم من التأمين</small><b>${money(t.deposits_kept)}</b></div>
+      <div class="tile"><small>غرامات تأخير</small><b>${money(t.late_fees)}</b></div><div class="tile"><small>حجوزات</small><b>${t.bookings}</b></div></div>
+      <h2>مقارنة الشهور (إيراد)</h2><div class="card">${r.compare.map((c, i) => `<div style="margin:8px 0"><div class="row"><b class="grow">${mlabel(c.month)}</b><span>${money(c.revenue)} <span class="${r.compare[i + 1] && c.revenue < r.compare[i + 1].revenue ? 'late' : 'mut'} small">${diff(c.revenue, (r.compare[i + 1] || {}).revenue)}</span></span></div>
+        <div style="background:#eee;border-radius:6px;height:10px"><div style="background:${i === 0 ? 'var(--p)' : '#b99'};height:10px;border-radius:6px;width:${Math.round(c.revenue / max * 100)}%"></div></div>
+        <div class="small mut">${c.bookings} حجز · صافي ${money(c.net_cash)}</div></div>`).join('')}</div>
+      <h2>أيام الشهر (صافي)</h2>${r.month_days.map(d => `<div class="kv"><span>${fd(d.day)}</span><b>${money(d.net)}</b></div>`).join('') || '<p class="mut">مفيش حركة</p>'}`;
+  });
+}
 
 // ---------- boot ----------
 (async () => { try { const m = await api('GET', '/api/me'); ME = m.user; TODAY = m.today; go('home'); } catch { renderLogin(); } })();

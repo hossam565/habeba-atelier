@@ -19,6 +19,7 @@ const SCHEMA = [
 `CREATE TABLE IF NOT EXISTS payments(id SERIAL PRIMARY KEY, rental_id INTEGER, kind TEXT, amount DOUBLE PRECISION, day TEXT, at TEXT, by_user TEXT)`,
 `CREATE TABLE IF NOT EXISTS maintenance(id SERIAL PRIMARY KEY, dress_id INTEGER, kind TEXT, start_date TEXT, expected_back TEXT, note TEXT, done_at TEXT, by_user TEXT)`,
 `CREATE TABLE IF NOT EXISTS activity(id SERIAL PRIMARY KEY, user_name TEXT, role TEXT, action TEXT, detail TEXT, at TEXT)`,
+`ALTER TABLE rentals ADD COLUMN IF NOT EXISTS measures TEXT`,
 `CREATE INDEX IF NOT EXISTS i_rent_dress ON rentals(dress_id)`, `CREATE INDEX IF NOT EXISTS i_pay_rental ON payments(rental_id)`, `CREATE INDEX IF NOT EXISTS i_pay_day ON payments(day)`,
 ];
 // ---------- helpers ----------
@@ -142,7 +143,7 @@ route('GET', '/api/dresses/:id', 'any', async c => {
   const d = (await get('SELECT * FROM dresses WHERE id=? AND deleted=0', [c.params.id])); if (!d) throw new HttpError(404, 'الفستان مش موجود');
   const rentals = (await mapA((await all("SELECT * FROM rentals WHERE dress_id=? ORDER BY start_date DESC LIMIT 30", [d.id])), rentalView));
   const maintenance = (await all('SELECT * FROM maintenance WHERE dress_id=? ORDER BY id DESC LIMIT 15', [d.id]));
-  return { ...dressRow(d), rentals, maintenance };
+  return { ...(await dressRow(d)), rentals, maintenance };
 });
 function dressInput(b) {
   const code = String(b.code || '').trim(); if (!code) throw bad('اكتب رقم الفستان');
@@ -161,7 +162,11 @@ route('PUT', '/api/dresses/:id', 'owner', async c => {
 });
 route('DELETE', '/api/dresses/:id', 'owner', async c => {
   const d = (await get('SELECT * FROM dresses WHERE id=?', [c.params.id])); if (!d) throw new HttpError(404, 'مش موجود');
-  if ((await get("SELECT 1 FROM rentals WHERE dress_id=? AND status IN ('booked','out')", [d.id]))) throw bad('الفستان عليه حجز أو خارج، خلّصه الأول');
+  if ((await get("SELECT 1 FROM rentals WHERE dress_id=? AND status IN ('booked','out')", [d.id]))) {
+    if (!c.query.force) throw bad('الفستان عليه حجز أو خارج. لو متأكدة امسحه برضه (الحجوزات هتتلغي)');
+    (await run("UPDATE rentals SET status='cancelled' WHERE dress_id=? AND status IN ('booked','out')", [d.id]));
+  }
+  (await run('DELETE FROM maintenance WHERE dress_id=? AND done_at IS NULL', [d.id]));
   (await run("UPDATE dresses SET deleted=1, code=code||'#del'||id WHERE id=?", [d.id]));
   await log(c.user, 'حذف فستان', `رقم ${d.code}`); return { ok: true };
 });
@@ -211,6 +216,7 @@ route('POST', '/api/rentals', 'any', async c => tx(async () => {
   const rid = ((await insert(`INSERT INTO rentals(dress_id,customer_name,phone,national_id,address,id_photo_id,start_date,end_date,price,discount,deposit,status,notes,out_at,created_by,created_at)
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [d.id, String(b.customer_name).trim(), String(b.phone || ''), String(b.national_id || ''), String(b.address || ''), idPhoto,
     b.start_date, b.end_date, price, discount, num(b.deposit), handover ? 'out' : 'booked', String(b.notes || ''), handover ? nowISO() : null, c.user.name, nowISO()])));
+  if (b.measures) await run('UPDATE rentals SET measures=? WHERE id=?', [String(b.measures), rid]);
   if (num(b.paid) > 0) await addPayment(rid, 'rental', Math.min(num(b.paid), price - discount), c.user);
   if (num(b.deposit_paid) > 0) await addPayment(rid, 'deposit', num(b.deposit_paid), c.user);
   await log(c.user, handover ? 'تسليم فستان' : 'حجز جديد', `فستان ${d.code} للعميلة ${b.customer_name} من ${dmy(b.start_date)} إلى ${dmy(b.end_date)} (إجمالي ${price - discount})`);
@@ -230,9 +236,17 @@ route('POST', '/api/rentals/:id/handover', 'any', async c => tx(async () => {
   const m = (await get('SELECT * FROM maintenance WHERE dress_id=? AND done_at IS NULL', [r.dress_id]));
   if (m) throw bad('الفستان لسه في الغسيل أو التصليح، رجّعه الأول');
   if ((await get("SELECT 1 FROM rentals WHERE dress_id=? AND status='out'", [r.dress_id]))) throw bad('الفستان لسه خارج مع عميلة تانية');
-  (await run("UPDATE rentals SET status='out', out_at=? WHERE id=?", [nowISO(), r.id]));
+  const b = c.body;
+  const end = isDate(b.end_date) ? b.end_date : r.end_date;
+  if (end < today() && end < r.start_date) throw bad('ميعاد الرجوع غلط');
+  const v = await rentalView(r), pay = num(b.paid), dep = num(b.deposit_paid);
+  if (pay > v.remaining + 0.001) throw bad('المبلغ أكبر من المتبقي ' + v.remaining);
+  const idPhoto = b.id_photo ? await saveFile(b.id_photo) : r.id_photo_id;
+  (await run("UPDATE rentals SET status='out', out_at=?, end_date=?, id_photo_id=?, national_id=?, deposit=? WHERE id=?", [nowISO(), end, idPhoto, b.national_id != null ? String(b.national_id) : r.national_id, dep > 0 ? dep : r.deposit, r.id]));
+  if (pay > 0) await addPayment(r.id, 'rental', pay, c.user);
+  if (dep > 0) await addPayment(r.id, 'deposit', dep, c.user);
   const d = (await get('SELECT code FROM dresses WHERE id=?', [r.dress_id]));
-  await log(c.user, 'تسليم فستان', `فستان ${d.code} للعميلة ${r.customer_name}`); return { ok: true };
+  await log(c.user, 'تسليم فستان', `فستان ${d.code} للعميلة ${r.customer_name}${pay ? ' - اتحصّل ' + pay : ''}${dep ? ' - تأمين ' + dep : ''}`); return { ok: true };
 }));
 route('POST', '/api/rentals/:id/return', 'any', async c => tx(async () => {
   const r = (await get('SELECT * FROM rentals WHERE id=?', [c.params.id]));
@@ -264,15 +278,80 @@ route('POST', '/api/rentals/:id/cancel', 'owner', async c => {
   if (v.deposit_paid - v.deposit_refunded > 0) await addPayment(r.id, 'deposit_refund', v.deposit_paid - v.deposit_refunded, c.user);
   await log(c.user, 'إلغاء حجز', `${r.customer_name}`); return { ok: true };
 });
-route('PUT', '/api/rentals/:id', 'owner', async c => {
+route('PUT', '/api/rentals/:id', 'owner', async c => tx(async () => {
   const r = (await get('SELECT * FROM rentals WHERE id=?', [c.params.id])); if (!r) throw new HttpError(404, 'مش موجود');
-  const b = c.body;
-  if (isDate(b.start_date) && isDate(b.end_date)) {
-    const cf = await conflicts(r.dress_id, b.start_date, b.end_date, r.id); if (cf.length) throw bad('تعارض: ' + cf[0]);
+  const b = c.body, dress = b.dress_id ? Number(b.dress_id) : r.dress_id;
+  const start = isDate(b.start_date) ? b.start_date : r.start_date, end = isDate(b.end_date) ? b.end_date : r.end_date;
+  if (end < start) throw bad('تاريخ الرجوع قبل الاستلام');
+  if ((r.status === 'booked' || r.status === 'out') && (await conflicts(dress, start, end, r.id)).length) throw bad('تعارض: ' + (await conflicts(dress, start, end, r.id))[0]);
+  const price = b.price != null ? num(b.price) : r.price, disc = b.discount != null ? num(b.discount) : r.discount;
+  if (disc > price) throw bad('الخصم أكبر من السعر');
+  (await run('UPDATE rentals SET dress_id=?,customer_name=?,phone=?,national_id=?,address=?,start_date=?,end_date=?,price=?,discount=?,deposit=?,notes=?,measures=? WHERE id=?', [dress,
+    b.customer_name ?? r.customer_name, b.phone ?? r.phone, b.national_id ?? r.national_id, b.address ?? r.address, start, end, price, disc, b.deposit != null ? num(b.deposit) : r.deposit, b.notes ?? r.notes, b.measures ?? r.measures, r.id]));
+  if (b.paid != null) { // عربون / المدفوع من الإيجار
+    const cur = (await all("SELECT * FROM payments WHERE rental_id=? AND kind='rental' ORDER BY id", [r.id]));
+    let sum = cur.reduce((a, p) => a + p.amount, 0), want = Math.max(0, num(b.paid));
+    if (want > price - disc + 0.001) throw bad('المدفوع أكبر من الإجمالي');
+    if (want > sum) await addPayment(r.id, 'rental', want - sum, c.user);
+    for (let i = cur.length - 1; i >= 0 && sum > want + 0.001; i--) {
+      const cut = Math.min(cur[i].amount, sum - want);
+      if (cut >= cur[i].amount - 0.001) (await run('DELETE FROM payments WHERE id=?', [cur[i].id])); else (await run('UPDATE payments SET amount=amount-? WHERE id=?', [cut, cur[i].id]));
+      sum -= cut;
+    }
   }
-  (await run('UPDATE rentals SET customer_name=?,phone=?,national_id=?,address=?,start_date=?,end_date=?,price=?,discount=?,deposit=?,notes=? WHERE id=?', [b.customer_name ?? r.customer_name, b.phone ?? r.phone, b.national_id ?? r.national_id, b.address ?? r.address, isDate(b.start_date) ? b.start_date : r.start_date, isDate(b.end_date) ? b.end_date : r.end_date,
-      b.price != null ? num(b.price) : r.price, b.discount != null ? num(b.discount) : r.discount, b.deposit != null ? num(b.deposit) : r.deposit, b.notes ?? r.notes, r.id]));
-  await log(c.user, 'تعديل حجز', `#${r.id} ${r.customer_name}`); return { ok: true };
+  await log(c.user, 'تعديل حجز', `#${r.id} ${b.customer_name ?? r.customer_name}`); return { ok: true };
+}));
+route('DELETE', '/api/rentals/:id', 'owner', async c => tx(async () => {
+  const r = (await get('SELECT * FROM rentals WHERE id=?', [c.params.id])); if (!r) throw new HttpError(404, 'مش موجود');
+  (await run('DELETE FROM payments WHERE rental_id=?', [r.id])); (await run('DELETE FROM rentals WHERE id=?', [r.id]));
+  await log(c.user, 'مسح عملية', `#${r.id} ${r.customer_name}`); return { ok: true };
+}));
+route('PUT', '/api/payments/:id', 'owner', async c => {
+  const p = (await get('SELECT * FROM payments WHERE id=?', [c.params.id])); if (!p) throw new HttpError(404, 'مش موجود');
+  const amt = num(c.body.amount); if (!(amt > 0)) throw bad('المبلغ لازم يكون أكبر من صفر');
+  const day = isDate(c.body.day) ? c.body.day : p.day;
+  (await run('UPDATE payments SET amount=?, day=? WHERE id=?', [amt, day, p.id]));
+  await log(c.user, 'تعديل دفعة', `#${p.rental_id} → ${amt}`); return { ok: true };
+});
+route('DELETE', '/api/payments/:id', 'owner', async c => {
+  const p = (await get('SELECT * FROM payments WHERE id=?', [c.params.id])); if (!p) throw new HttpError(404, 'مش موجود');
+  (await run('DELETE FROM payments WHERE id=?', [p.id])); await log(c.user, 'مسح دفعة', `#${p.rental_id} ${p.amount}`); return { ok: true };
+});
+route('PUT', '/api/rentals/:id/status', 'owner', async c => {
+  const r = (await get('SELECT * FROM rentals WHERE id=?', [c.params.id])); if (!r) throw new HttpError(404, 'مش موجود');
+  const st = c.body.status; if (!['booked', 'out', 'returned', 'cancelled'].includes(st)) throw bad('حالة غلط');
+  if (st === 'booked' || st === 'out') { const cf = await conflicts(r.dress_id, r.start_date, r.end_date, r.id); if (cf.length) throw bad('تعارض: ' + cf[0]); }
+  (await run('UPDATE rentals SET status=?, returned_at=? WHERE id=?', [st, st === 'returned' ? (r.returned_at || nowISO()) : null, r.id]));
+  await log(c.user, 'تغيير حالة', `#${r.id} → ${st}`); return { ok: true };
+});
+route('DELETE', '/api/maintenance/:id', 'owner', async c => { (await run('DELETE FROM maintenance WHERE id=?', [c.params.id])); await log(c.user, 'مسح غسيل/تصليح', '#' + c.params.id); return { ok: true }; });
+route('GET', '/api/report', 'owner', async c => {
+  const day = isDate(c.query.date) ? c.query.date : today();
+  const month = /^\d{4}-\d{2}$/.test(c.query.month || '') ? c.query.month : day.slice(0, 7);
+  const kinds = async (cond, arg) => {
+    const rows = await all(`SELECT kind, SUM(amount)::float8 s FROM payments WHERE ${cond} GROUP BY kind`, [arg]);
+    const g = k => (rows.find(r => r.kind === k) || { s: 0 }).s;
+    const rental = g('rental'), dep = g('deposit'), refund = g('deposit_refund'), ded = g('deduction'), late = g('late_fee');
+    return { rental, deposits_in: dep, deposits_refunded: refund, deposits_kept: ded, late_fees: late, net_cash: rental + dep - refund + late, revenue: rental + ded + late };
+  };
+  const nb = async (cond, arg) => (await get(`SELECT COUNT(*)::int n FROM rentals WHERE ${cond} AND status!='cancelled'`, [arg])).n;
+  const rep = { day, month };
+  rep.day_totals = await kinds('day=?', day);
+  rep.day_totals.bookings = await nb('substr(created_at,1,10)=?', day);
+  rep.day_totals.handovers = await nb('substr(out_at,1,10)=?', day);
+  rep.day_totals.returns = (await get("SELECT COUNT(*)::int n FROM rentals WHERE status='returned' AND substr(returned_at,1,10)=?", [day])).n;
+  const pays = await all("SELECT p.*, r.customer_name, d.code FROM payments p LEFT JOIN rentals r ON r.id=p.rental_id LEFT JOIN dresses d ON d.id=r.dress_id WHERE p.day=? ORDER BY p.id", [day]);
+  rep.day_payments = pays;
+  rep.day_events = await all("SELECT r.id, r.customer_name, r.status, r.start_date, r.end_date, d.code FROM rentals r LEFT JOIN dresses d ON d.id=r.dress_id WHERE r.status!='cancelled' AND (substr(r.created_at,1,10)=? OR substr(r.out_at,1,10)=? OR substr(r.returned_at,1,10)=? OR r.start_date=? OR r.end_date=?) ORDER BY r.id", [day, day, day, day, day]);
+  rep.month_totals = await kinds('substr(day,1,7)=?', month);
+  rep.month_totals.bookings = await nb('substr(created_at,1,7)=?', month);
+  rep.month_days = await all("SELECT day, SUM(CASE WHEN kind IN ('rental','late_fee') THEN amount WHEN kind='deposit' THEN amount WHEN kind='deposit_refund' THEN -amount ELSE 0 END)::float8 net FROM payments WHERE substr(day,1,7)=? GROUP BY day ORDER BY day", [month]);
+  // last 6 months comparison
+  const months = []; let [y, m] = month.split('-').map(Number);
+  for (let i = 0; i < 6; i++) { months.push(`${y}-${String(m).padStart(2, '0')}`); m--; if (m === 0) { m = 12; y--; } }
+  rep.compare = [];
+  for (const mo of months) { const k = await kinds('substr(day,1,7)=?', mo); rep.compare.push({ month: mo, ...k, bookings: await nb('substr(created_at,1,7)=?', mo) }); }
+  return rep;
 });
 
 route('GET', '/api/accounts', 'owner', async c => {
