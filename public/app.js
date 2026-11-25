@@ -188,7 +188,7 @@ async function renderNewRental(dressId) {
     S.dresses = await api('GET', '/api/dresses');
     const t = TODAY;
     shell('حجز فستان', bookingFields({ dress_id: dressId || '', start_date: t, end_date: t, price: '', discount: 0, paid: 0, customer_name: '', phone: '', measures: '', notes: '' }) +
-      `<div class="btns"><button class="btn full" onclick="saveRental()">📅 تسجيل الحجز</button></div>`);
+      `<div class="btns"><button class="btn full" onclick="saveRental()">✅ حجز</button></div>`);
     rdPick(!dressId);
   });
 }
@@ -230,35 +230,35 @@ async function saveRental() {
 }
 
 // ---------- handover (page 2) ----------
-async function renderHandoverList() {
+async function renderHandoverList() { return renderHandover(0); }
+async function renderHandover(id) {
+  TAB = 'handover'; clearInterval(pollTimer);
   shell('التسليم', '<p class="mut">بيحمّل...</p>');
   await run(async () => {
     const [bk, out] = await Promise.all([api('GET', '/api/rentals?status=booked'), api('GET', '/api/rentals?status=out')]);
     bk.sort((a, b) => a.start_date < b.start_date ? -1 : 1); out.sort((a, b) => a.end_date < b.end_date ? -1 : 1);
-    const it = (r, act) => `<div class="li" onclick="${act}(${r.id})"><div class="grow"><div class="t">${esc(r.customer_name)} <span class="mut">- فستان ${esc(r.dress_code)}</span></div>
-      <div class="s">${fd(r.start_date)} ← ${fd(r.end_date)}${r.overdue ? ' <span class="late">متأخر</span>' : ''}${r.remaining > 0 ? ' · باقي ' + money(r.remaining) : ''}</div></div><span class="badge b-${r.status}">${STATUS_AR[r.status]}</span></div>`;
-    shell('التسليم', `<h2>حجوزات مستنية التسليم (${bk.length})</h2>${bk.map(r => it(r, 'renderHandover')).join('') || '<p class="mut">مفيش حجوزات</p>'}
-      <h2>فساتين خارجة (${out.length})</h2>${out.map(r => it(r, 'renderRental')).join('') || '<p class="mut">مفيش فساتين خارجة</p>'}`);
-  });
-}
-async function renderHandover(id) {
-  await run(async () => {
-    const r = await api('GET', '/api/rentals/' + id); const d = await api('GET', '/api/dresses/' + r.dress_id);
-    shell('تسليم فستان ' + r.dress_code, `
-      <div class="card">${d.photo_id ? `<img class="bigph" style="max-height:260px;object-fit:cover" src="/api/files/${d.photo_id}">` : ''}
+    const sel = bk.find(r => r.id === id) || bk[0];
+    let form = '<p class="mut">مفيش حجوزات مستنية التسليم. سجّل حجز الأول من تاب "حجز".</p>';
+    if (sel) {
+      const r = await api('GET', '/api/rentals/' + sel.id); const d = await api('GET', '/api/dresses/' + r.dress_id);
+      form = `<div class="card">${d.photo_id ? `<img class="bigph" style="max-height:260px;object-fit:cover" src="/api/files/${d.photo_id}">` : ''}
         <div class="row" style="margin-top:8px"><div class="grow"><b style="font-size:19px">فستان ${esc(r.dress_code)}</b><div class="mut">${esc(r.dress_name)}</div></div></div>
         <div class="kv"><span>العميلة</span><b>${esc(r.customer_name)}</b></div><div class="kv"><span>التليفون</span><b>${esc(r.phone) || '-'}</b></div>
         <div class="kv"><span>المقاسات</span><b>${esc(r.measures) || '-'}</b></div>${r.notes ? `<div class="kv"><span>ملاحظات</span><b>${esc(r.notes)}</b></div>` : ''}
         <div class="kv"><span>الإجمالي</span><b>${money(r.total)}</b></div><div class="kv"><span>العربون المدفوع</span><b>${money(r.paid)}</b></div>
         <div class="kv"><span>الباقي</span><b class="late">${money(r.remaining)}</b></div></div>
-      <div class="card"><b>عند التسليم</b>
+      <div class="card"><b>بيانات التسليم</b>
         <label>الباقي اللي هتاخديه دلوقتي</label><input id="hp" type="number" inputmode="decimal" value="${r.remaining}">
         <label>التأمين المدفوع (بيتردّ لو الفستان رجع سليم)</label><input id="hd" type="number" inputmode="decimal" value="${r.deposit || d.deposit || 0}">
         <label>ميعاد رجوع الفستان</label><input type="date" id="he" value="${r.end_date}">
         <label>الرقم القومي</label><input id="hn" inputmode="numeric" maxlength="14" value="${esc(r.national_id)}">
         <label>صورة البطاقة</label>${photoPicker('hph', 'صوّر البطاقة', true)}</div>
-      <div class="btns"><button class="btn ok full" onclick="doHandover2(${r.id})">🤝 تأكيد التسليم</button>
-        <button class="btn sec" onclick="renderRental(${r.id})">تفاصيل الحجز</button></div>`, { back: "go('handover')" });
+      <div class="btns"><button class="btn ok full" onclick="doHandover2(${r.id})">🤝 تسليم</button>
+        <button class="btn sec" onclick="renderRental(${r.id})">تفاصيل الحجز</button></div>`;
+    }
+    const pick = bk.length ? `<div class="card"><label>اختار الحجز اللي هتسلّمه (${bk.length})</label><select id="hsel" onchange="renderHandover(+this.value)">${bk.map(r => `<option value="${r.id}" ${sel && r.id === sel.id ? 'selected' : ''}>فستان ${esc(r.dress_code)} - ${esc(r.customer_name)} - ${fd(r.start_date)}</option>`).join('')}</select></div>` : '';
+    const outL = out.length ? `<h2>فساتين خارجة (${out.length}) - اضغط للاستلام</h2>${out.map(r => rentalItem(r)).join('')}` : '';
+    shell('التسليم', pick + form + outL);
   });
 }
 async function doHandover2(id) {
